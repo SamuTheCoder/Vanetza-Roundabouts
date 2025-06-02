@@ -1,43 +1,54 @@
 version: '2.4'
 services:
-    obu_one:
-        hostname: obu_one
-        restart: always
-        image: code.nap.av.it.pt:5050/mobility-networks/vanetza:latest
-        cap_add:
-            - "NET_ADMIN"
-        environment:
-            - VANETZA_STATION_ID=1
-            - VANETZA_STATION_TYPE=5
-            - VANETZA_MAC_ADDRESS=6e:06:e0:03:00:01
-            - VANETZA_INTERFACE=br0
-            - START_EMBEDDED_MOSQUITTO=true
-            - SUPPORT_MAC_BLOCKING=true
-        networks:
-            vanetzalan0:
-                ipv4_address: 192.168.98.10
-        volumes:
-            - ./tools/socktap/config.ini:/config.ini
+  obu_one:
+    hostname: obu_one
+    restart: always
+    image: code.nap.av.it.pt:5050/mobility-networks/vanetza:latest
+    cap_add:
+      - "NET_ADMIN"
+    environment:
+      - VANETZA_STATION_ID=1
+      - VANETZA_STATION_TYPE=5
+      - VANETZA_MAC_ADDRESS=6e:06:e0:03:00:01
+      - VANETZA_INTERFACE=br0
+      - START_EMBEDDED_MOSQUITTO=true
+      - SUPPORT_MAC_BLOCKING=true
+    networks:
+      vanetzalan0:
+        ipv4_address: 192.168.98.10
+    volumes:
+      - ./tools/socktap/config.ini:/config.ini
 
-    obu_two:
-        hostname: obu_two
-        restart: always
-        image: code.nap.av.it.pt:5050/mobility-networks/vanetza:latest
-        cap_add:
-            - "NET_ADMIN"
-        environment:
-            - VANETZA_STATION_ID=2
-            - VANETZA_STATION_TYPE=5
-            - VANETZA_MAC_ADDRESS=6e:06:e0:03:00:02
-            - VANETZA_INTERFACE=br0
-            - START_EMBEDDED_MOSQUITTO=true
-            - SUPPORT_MAC_BLOCKING=true
-        networks:
-            vanetzalan0:
-                ipv4_address: 192.168.98.20
-        volumes:
-            - ./tools/socktap/config.ini:/config.ini
-            
+  obu_two:
+    hostname: obu_two
+    restart: always
+    image: code.nap.av.it.pt:5050/mobility-networks/vanetza:latest
+    cap_add:
+      - "NET_ADMIN"
+    environment:
+      - VANETZA_STATION_ID=2
+      - VANETZA_STATION_TYPE=5
+      - VANETZA_MAC_ADDRESS=6e:06:e0:03:00:02
+      - VANETZA_INTERFACE=br0
+      - START_EMBEDDED_MOSQUITTO=true
+      - SUPPORT_MAC_BLOCKING=true
+    networks:
+      vanetzalan0:
+        ipv4_address: 192.168.98.20
+    volumes:
+      - ./tools/socktap/config.ini:/config.ini
+
+  mosquitto-websocket:
+    image: eclipse-mosquitto
+    ports:
+      - "1884:1883"
+      - "8083:8083"  # Host:Container, allows frontend on localhost to connect
+    volumes:
+      - ./mosquitto_websocket.conf:/mosquitto/config/mosquitto.conf
+    networks:
+      vanetzalan0:
+        ipv4_address: 192.168.98.30  # optional but can be useful for internal access
+
 networks:
   vanetzalan0:
     external: true
