@@ -12,7 +12,7 @@ obu_brokers = [
 ]
 central_broker = {"host": "192.168.98.30", "port": 1883}
 
-# Graceful shutdown flag
+# Shutdown flag
 running = True
 
 # Connect to central broker
@@ -23,12 +23,25 @@ central_client.loop_start()
 def make_on_message(obu_id):
     def on_message(client, userdata, msg):
         try:
-            payload = msg.payload.decode()
-            print(f"[{obu_id}] → {msg.topic}: {payload}")
-            central_client.publish(f"{obu_id}/{msg.topic}", msg.payload)
+            payload = json.loads(msg.payload.decode())
+            lat = payload.get("latitude")
+            lon = payload.get("longitude")
+
+            if lat is not None and lon is not None:
+                simplified_msg = {
+                    "obu_id": obu_id,
+                    "latitude": lat,
+                    "longitude": lon
+                }
+                central_client.publish("frontend/obu_position", json.dumps(simplified_msg))
+                print(f"[{obu_id}] Published to frontend: {simplified_msg}")
+            else:
+                print(f"[{obu_id}] Received CAM message without position")
+
         except Exception as e:
-            print(f"Error forwarding message from {obu_id}: {e}")
+            print(f"Error processing message from {obu_id}: {e}")
     return on_message
+
 
 # Track all OBU clients for cleanup
 obu_clients = []

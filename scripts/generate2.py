@@ -3,76 +3,104 @@ import paho.mqtt.client as mqtt
 import threading
 from time import sleep
 import math
+import gpxpy
 
-# Define roundabout center and radius
-center_lat = 40.0
-center_lon = -8.0
-radius = 0.0001  # ~11 meters
+# ========== CONFIGURATION ==========
+GPX_FILE = 'obu2.gpx'
+MQTT_BROKER = '192.168.98.20'
+MQTT_PORT = 1883
+MQTT_TOPIC_IN = 'vanetza/in/cam'
+MQTT_TOPIC_OUT = 'vanetza/out/cam'
+DISTANCE_THRESHOLD = 0.00005  # ~5.5 meters
+SLEEP_INTERVAL = 1  # seconds
+# ===================================
 
-# Define approach, arc, and exit steps
-approach_steps = 10
-arc_steps = 20
-exit_steps = 10
+def load_gpx_coordinates(gpx_path):
+    with open(gpx_path, 'r') as gpx_file:
+        gpx = gpxpy.parse(gpx_file)
+        coords = []
 
-# Precompute trajectory points
-trajectory = []
+        for waypoint in gpx.waypoints:
+            coords.append((waypoint.latitude, waypoint.longitude))
 
-# Approach: move up along y-axis (latitude increases)
-for i in range(approach_steps):
-    lat = center_lat - 3*radius + i * (radius / approach_steps)
-    lon = center_lon
-    trajectory.append((lat, lon))
+        for track in gpx.tracks:
+            for segment in track.segments:
+                for point in segment.points:
+                    coords.append((point.latitude, point.longitude))
 
-# Arc: half-circle from south to east (second exit)
-for i in range(arc_steps):
-    angle = math.pi/2 + (i * (math.pi/2) / arc_steps)  # from 90° to 180°
-    lat = center_lat + radius * math.sin(angle)
-    lon = center_lon + radius * math.cos(angle)
-    trajectory.append((lat, lon))
+        return coords
 
-# Exit: move along x-axis (longitude increases)
-for i in range(exit_steps):
-    lat = center_lat
-    lon = center_lon + radius + i * (radius / exit_steps)
-    trajectory.append((lat, lon))
+trajectory = load_gpx_coordinates(GPX_FILE)
 
+print(f"Loaded {len(trajectory)} points from GPX file")
+
+# Shared variable for the other OBU's position
+other_obu_pos = {"lat": None, "lon": None}
+lock = threading.Lock()
 
 def on_connect(client, userdata, flags, rc, properties):
-    print("Connected with result code "+str(rc))
-    client.subscribe("vanetza/out/cam")
+    print("Connected with result code", rc)
+    client.subscribe(MQTT_TOPIC_OUT)
 
-
-# É chamada automaticamente sempre que recebe uma mensagem nos tópicos subscritos em cima
 def on_message(client, userdata, msg):
-    message = msg.payload.decode('utf-8')
-    
-    
-    #print('Message' + message)
+    try:
+        obj = json.loads(msg.payload.decode('utf-8'))
+        lat = obj.get("latitude")
+        lon = obj.get("longitude")
+        if lat is not None and lon is not None:
+            with lock:
+                other_obu_pos["lat"] = lat
+                other_obu_pos["lon"] = lon
+            print(f"Received other OBU position: lat={lat}, lon={lon}")
+    except Exception as e:
+        print("Error parsing incoming CAM message:", e)
 
-    obj = json.loads(message)
+def distance(lat1, lon1, lat2, lon2):
+    return math.sqrt((lat1 - lat2)**2 + (lon1 - lon2)**2)
 
-    lat = obj["latitude"]
-    lon = obj["longitude"]
-
-    print("Latitude: " + str(lat))
-    print("Longitude: " + str(lon))
-
-
-def generate_trajectory_one():
+def generate_trajectory():
+    print("a")
     for lat, lon in trajectory:
+        # Wait if too close to the other OBU
+        print("2")
+        while True:
+            with lock:
+                other_lat = other_obu_pos["lat"]
+                other_lon = other_obu_pos["lon"]
+            if other_lat is not None and other_lon is not None:
+                d = distance(lat, lon, other_lat, other_lon)
+                print(f"Distance to other OBU: {d:.7f}")
+                if d < DISTANCE_THRESHOLD:
+                    print("Too close to other OBU, waiting...")
+                    sleep(0.5)
+                    continue
+            break
+
         with open('in_cam.json') as f:
             m = json.load(f)
+
+        # Inject new coordinates into CAM message
         m["latitude"] = lat
         m["longitude"] = lon
-        m = json.dumps(m)
-        client.publish("vanetza/in/cam", m)
-        sleep(1)
+
+        message = json.dumps(m)
+        client.publish(MQTT_TOPIC_IN, message)
+        print(f"Sent CAM message: lat={lat}, lon={lon}")
+        sleep(SLEEP_INTERVAL)
 
 client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
 client.on_connect = on_connect
 client.on_message = on_message
-client.connect("192.168.98.20", 1883, 60)
 
-threading.Thread(target=client.loop_forever).start()
+client.connect(MQTT_BROKER, MQTT_PORT, 60)
 
-generate_trajectory_one()
+# Start MQTT loop in a separate thread
+thread = threading.Thread(target=client.loop_forever)
+thread.start()
+
+# Start sending trajectory
+generate_trajectory()
+
+# Clean shutdown
+client.disconnect()
+thread.join()

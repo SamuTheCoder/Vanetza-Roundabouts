@@ -6,13 +6,13 @@ import math
 import gpxpy
 
 # ========== CONFIGURATION ==========
-GPX_FILE = 'gpxgenerator_path.gpx'
+GPX_FILE = 'obu1.gpx'
 MQTT_BROKER = '192.168.98.10'
 MQTT_PORT = 1883
 MQTT_TOPIC_IN = 'vanetza/in/cam'
 MQTT_TOPIC_OUT = 'vanetza/out/cam'
 DISTANCE_THRESHOLD = 0.00005  # ~5.5 meters
-SLEEP_INTERVAL = 1  # seconds
+SLEEP_INTERVAL = 1 # seconds
 # ===================================
 
 def load_gpx_coordinates(gpx_path):
@@ -91,6 +91,7 @@ def generate_trajectory():
 client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
 client.on_connect = on_connect
 client.on_message = on_message
+sleep(2)
 client.connect(MQTT_BROKER, MQTT_PORT, 60)
 
 # Start MQTT loop in a separate thread
