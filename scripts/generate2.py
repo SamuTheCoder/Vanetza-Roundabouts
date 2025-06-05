@@ -14,6 +14,7 @@ MQTT_TOPIC_IN = 'vanetza/in/cam'
 MQTT_TOPIC_OUT = 'vanetza/out/cam'
 SLEEP_INTERVAL = 1  # seconds
 ROUNDABOUT_MARGIN = 15  # meters
+OBU_PROXIMITY_THRESHOLD = 50  # meters (tweak as needed)
 # ===================================
 
 # ---------- Global Data ----------
@@ -59,6 +60,12 @@ def is_near_roundabout(pos, margin=ROUNDABOUT_MARGIN):
     d = geodesic(pos, ROUNDABOUT_CENTER).meters
     return ROUNDABOUT_RADIUS < d < (ROUNDABOUT_RADIUS + margin)
 
+def is_close_to_other_obu(my_pos, other_pos, threshold=OBU_PROXIMITY_THRESHOLD):
+    if None in my_pos or None in other_pos:
+        return False
+    return geodesic(my_pos, other_pos).meters <= threshold
+
+
 # ---------- MQTT Callbacks ----------
 def on_connect(client, userdata, flags, rc, properties):
     print(": Connected with result code", rc)
@@ -98,7 +105,8 @@ def send_trajectory():
         print(f":OBU 2 is inside roundabout: {is_inside_roundabout(my_pos)}")
         print(f":OBU 1 is inside roundabout: {is_inside_roundabout(other_obu_pos)}")
 
-        if is_near_roundabout(my_pos) and is_inside_roundabout(other_obu_pos):
+        if is_near_roundabout(my_pos) and is_inside_roundabout(other_obu_pos) and is_close_to_other_obu(my_pos, other_obu_pos):
+            print(": Yielding — other OBU is inside roundabout")
             stop = True
             while stop:
                 with other_obu_position_lock:

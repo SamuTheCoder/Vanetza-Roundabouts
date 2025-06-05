@@ -6,19 +6,20 @@ import gpxpy
 from geopy.distance import geodesic
 
 # ========== CONFIGURATION ==========
-GPX_FILE = 'path1.gpx'
+GPX_FILE = 'path2.gpx'
 ROUNDABOUT_FILE = 'roundabout.gpx'
-MQTT_BROKER = '192.168.98.20'
+MQTT_BROKER = '192.168.98.10'
 MQTT_PORT = 1883
 MQTT_TOPIC_IN = 'vanetza/in/cam'
 MQTT_TOPIC_OUT = 'vanetza/out/cam'
-SLEEP_INTERVAL = 1 # seconds
+SLEEP_INTERVAL = 1  # seconds
 ROUNDABOUT_MARGIN = 15  # meters
+OBU_PROXIMITY_THRESHOLD = 50  # meters (tweak as needed)
 # ===================================
 
 # ---------- Global Data ----------
 trajectory = []
-other_obu_position = (None, None)  # Last known position of other OBU
+other_obu_position = None  # Last known position of other OBU
 
 # ---------- GPX Loader ----------
 def load_gpx_coordinates(gpx_path):
@@ -37,17 +38,17 @@ def load_gpx_coordinates(gpx_path):
 roundabout_coords = load_gpx_coordinates(ROUNDABOUT_FILE)
 
 if len(roundabout_coords) < 2:
-    print("> Roundabout GPX must have at least 2 points (center and edge)")
+    print(": Roundabout GPX must have at least 2 points (center and edge)")
     exit(1)
 
 ROUNDABOUT_CENTER = roundabout_coords[0]
 ROUNDABOUT_RADIUS = geodesic(ROUNDABOUT_CENTER, roundabout_coords[1]).meters
 
-print(f"> Roundabout center: {ROUNDABOUT_CENTER}, radius: {ROUNDABOUT_RADIUS:.2f}m")
+print(f": Roundabout center: {ROUNDABOUT_CENTER}, radius: {ROUNDABOUT_RADIUS:.2f}m")
 
 # ---------- Trajectory ----------
 trajectory = load_gpx_coordinates(GPX_FILE)
-print(f"> Loaded {len(trajectory)} points from GPX file")
+print(f": Loaded {len(trajectory)} points from GPX file")
 
 # ---------- Distance Helpers ----------
 def is_inside_roundabout(pos):
@@ -59,53 +60,61 @@ def is_near_roundabout(pos, margin=ROUNDABOUT_MARGIN):
     d = geodesic(pos, ROUNDABOUT_CENTER).meters
     return ROUNDABOUT_RADIUS < d < (ROUNDABOUT_RADIUS + margin)
 
+def is_close_to_other_obu(my_pos, other_pos, threshold=OBU_PROXIMITY_THRESHOLD):
+    if None in my_pos or None in other_pos:
+        return False
+    return geodesic(my_pos, other_pos).meters <= threshold
+
+
 # ---------- MQTT Callbacks ----------
 def on_connect(client, userdata, flags, rc, properties):
-    print("> Connected with result code", rc)
+    print(": Connected with result code", rc)
     client.subscribe(MQTT_TOPIC_OUT)
 
+other_obu_position_lock = threading.Lock()
+
 def on_message(client, userdata, msg):
+    global other_obu_position
     try:
-        global other_obu_position
         obj = json.loads(msg.payload.decode('utf-8'))
 
         lat = obj.get("latitude")
         lon = obj.get("longitude")
-        print("OBU 1 Recv lat: ", lat, "lon:", lon)
 
         if lat is not None and lon is not None:
-            other_obu_position = (lat, lon)
-            print(f"> Received CAM from other OBU: lat={lat}, lon={lon}")
+            with other_obu_position_lock:
+                other_obu_position = (lat, lon)
+            print(f": Received CAM from other OBU: lat={lat}, lon={lon}")
 
     except Exception as e:
-        print("> Error parsing CAM:", e)
+        print(": Error parsing CAM:", e)
 
+# ---------- Main Sending Loop ----------
 #stop tag (if False, it only turns truei when obu 1 exits the roundabout)
 stop = False
-# ---------- Main Sending Loop ----------
 def send_trajectory():
     global stop
     for lat, lon in trajectory:
         my_pos = (lat, lon)
 
+        with other_obu_position_lock:  # Acquire lock before reading
+            other_obu_pos = other_obu_position
+
         # --- Decision logic: Should I yield? ---
-        print(f">Other obu position: {other_obu_position}")
-        print(f">OBU 1 is near roundabout: {is_near_roundabout(my_pos)}")
-        print(f">OBU 1 is inside roundabout: {is_inside_roundabout(my_pos)}")
-        print(f">OBU 2 is inside roundabout: {is_inside_roundabout(other_obu_position)}")
-        if stop:
-            if is_inside_roundabout(other_obu_position):
-                print("> Waiting — other OBU is still inside roundabout")
-                sleep(SLEEP_INTERVAL)
-                continue
-            else:
-                stop = False
-                print("> Proceeding — other OBU has exited roundabout")
-        if is_near_roundabout(my_pos) and is_inside_roundabout(other_obu_position):
+        print(f":OBU 2 is near roundabout: {is_near_roundabout(my_pos)}")
+        print(f":OBU 2 is inside roundabout: {is_inside_roundabout(my_pos)}")
+        print(f":OBU 1 is inside roundabout: {is_inside_roundabout(other_obu_pos)}")
+
+        if is_near_roundabout(my_pos) and is_inside_roundabout(other_obu_pos) and is_close_to_other_obu(my_pos, other_obu_pos):
+            print(": Yielding — other OBU is inside roundabout")
             stop = True
-            print("> Waiting — other OBU is inside roundabout")
-            sleep(SLEEP_INTERVAL)
-            continue
+            while stop:
+                with other_obu_position_lock:
+                    if not is_inside_roundabout(other_obu_position):
+                        stop = False
+                        print(": Proceeding — other OBU has exited roundabout")
+                        break
+                sleep(SLEEP_INTERVAL)
 
         # --- Proceed and send CAM ---
         with open('in_cam.json') as f:
@@ -116,14 +125,14 @@ def send_trajectory():
 
         message = json.dumps(m)
         client.publish(MQTT_TOPIC_IN, message)
-        print(f"> Sent CAM: lat={lat}, lon={lon}")
-        print("Connected to 192.168.98.20, it's supposed to be OBU 2")
+        print(f": Sent CAM: lat={lat}, lon={lon}")
         sleep(SLEEP_INTERVAL)
 
 # ---------- MQTT Setup ----------
 client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
 client.on_connect = on_connect
 client.on_message = on_message
+sleep(2)
 client.connect(MQTT_BROKER, MQTT_PORT, 60)
 
 # ---------- Start Everything ----------
