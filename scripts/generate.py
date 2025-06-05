@@ -4,17 +4,18 @@ import threading
 from time import sleep
 import gpxpy
 from geopy.distance import geodesic
+from math import atan2, degrees
 
 # ========== CONFIGURATION ==========
-GPX_FILE = 'path2.gpx'
+GPX_FILE = 'path1_1.gpx'
 ROUNDABOUT_FILE = 'roundabout.gpx'
-MQTT_BROKER = '192.168.98.10'
+MQTT_BROKER = '192.168.98.20'
 MQTT_PORT = 1883
 MQTT_TOPIC_IN = 'vanetza/in/cam'
 MQTT_TOPIC_OUT = 'vanetza/out/cam'
 SLEEP_INTERVAL = 1  # seconds
 ROUNDABOUT_MARGIN = 15  # meters
-OBU_PROXIMITY_THRESHOLD = 50  # meters (tweak as needed)
+OBU_PROXIMITY_THRESHOLD = 35  # meters (tweak as needed)
 # ===================================
 
 # ---------- Global Data ----------
@@ -65,6 +66,46 @@ def is_close_to_other_obu(my_pos, other_pos, threshold=OBU_PROXIMITY_THRESHOLD):
         return False
     return geodesic(my_pos, other_pos).meters <= threshold
 
+def get_heading(current_pos, next_pos):
+    """
+    Returns absolute heading (0–360°) from current to next position.
+    """
+    return calculate_bearing(current_pos, next_pos)
+
+def calculate_bearing(from_pos, to_pos):
+    """
+    Calculate bearing in degrees from from_pos to to_pos.
+    """
+    lat1, lon1 = map(float, from_pos)
+    lat2, lon2 = map(float, to_pos)
+
+    dLon = lon2 - lon1
+    x = atan2(
+        dLon,
+        lat2 - lat1
+    )
+    brng = degrees(x)
+    return (brng + 360) % 360
+
+def is_threatening_position(my_pos, other_pos, my_heading):
+    if not is_inside_roundabout(other_pos):
+        return False
+
+    distance = geodesic(my_pos, other_pos).meters
+    if distance > OBU_PROXIMITY_THRESHOLD:
+        return False
+
+    bearing_to_other = calculate_bearing(my_pos, other_pos)
+
+    # Convert to relative bearing
+    relative_bearing = (bearing_to_other - my_heading + 360) % 360
+
+    print(f"1 Distance to other OBU: {distance:.2f}m")
+    print(f"1 Relative bearing to other OBU: {relative_bearing:.2f}°")
+
+    # Use relative cone
+    return 210 <= relative_bearing <= 350
+
 
 # ---------- MQTT Callbacks ----------
 def on_connect(client, userdata, flags, rc, properties):
@@ -84,7 +125,7 @@ def on_message(client, userdata, msg):
         if lat is not None and lon is not None:
             with other_obu_position_lock:
                 other_obu_position = (lat, lon)
-            print(f": Received CAM from other OBU: lat={lat}, lon={lon}")
+            #print(f": Received CAM from other OBU: lat={lat}, lon={lon}")
 
     except Exception as e:
         print(": Error parsing CAM:", e)
@@ -101,19 +142,21 @@ def send_trajectory():
             other_obu_pos = other_obu_position
 
         # --- Decision logic: Should I yield? ---
-        print(f":OBU 2 is near roundabout: {is_near_roundabout(my_pos)}")
-        print(f":OBU 2 is inside roundabout: {is_inside_roundabout(my_pos)}")
-        print(f":OBU 1 is inside roundabout: {is_inside_roundabout(other_obu_pos)}")
+        print(f":OBU 1 is near roundabout: {is_near_roundabout(my_pos)}")
+        print(f":OBU 1 is inside roundabout: {is_inside_roundabout(my_pos)}")
+        my_heading = get_heading(my_pos, trajectory[trajectory.index((lat, lon)) + 1]) if trajectory.index((lat, lon)) < len(trajectory) - 1 else 0
 
-        if is_near_roundabout(my_pos) and is_inside_roundabout(other_obu_pos) and is_close_to_other_obu(my_pos, other_obu_pos):
-            print(": Yielding — other OBU is inside roundabout")
+
+        if (is_near_roundabout(my_pos) or is_inside_roundabout(my_pos)) and is_threatening_position(my_pos, other_obu_pos, my_heading):
+            print(": Yielding — other OBU is a threat (left and close)")
             stop = True
             while stop:
                 with other_obu_position_lock:
-                    if not is_inside_roundabout(other_obu_position):
+                    if not is_threatening_position(my_pos, other_obu_position, my_heading):
                         stop = False
-                        print(": Proceeding — other OBU has exited roundabout")
+                        print(": Proceeding — other OBU is no longer a threat (left side cleared)")
                         break
+
                 sleep(SLEEP_INTERVAL)
 
         # --- Proceed and send CAM ---
